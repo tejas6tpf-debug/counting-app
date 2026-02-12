@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { exportStockSummary } from '../utils/excel-export';
+import { exportStockSummary, exportFilteredReport } from '../utils/excel-export';
 import {
     ClipboardList,
     Download,
@@ -75,10 +75,24 @@ const Reports = () => {
                 .select('*')
                 .in('part_number', uniquePNs);
 
+            const { data: avgMasters } = await supabase
+                .from('average_counts')
+                .select('*')
+                .in('part_number', uniquePNs);
+
             const masterMap = {};
             bMaster?.forEach(m => {
                 const key = String(m.part_number || '').trim().toUpperCase();
-                masterMap[key] = m;
+                masterMap[key] = { ...m, average_count: 0 };
+            });
+
+            avgMasters?.forEach(am => {
+                const key = String(am.part_number || '').trim().toUpperCase();
+                if (masterMap[key]) {
+                    masterMap[key].average_count = am.average_count;
+                } else {
+                    masterMap[key] = { average_count: am.average_count };
+                }
             });
 
             const latestDaily = {};
@@ -91,12 +105,42 @@ const Reports = () => {
 
             const results = [];
             if (activeTab === 'non-counted') {
-                // For non-counted, we actually DO need more master data (parts not in scans)
-                // But we limit it to 2000 for performance, usually enough for a shift
-                const { data: nonCountedMaster } = await supabase
-                    .from('base_part_master')
-                    .select('*')
-                    .limit(2000);
+                // To find non-counted, we need parts that have stock but ARE NOT in scans.
+                // Since there are 25k parts, we fetch in chunks of 1000.
+                let allBaseWithStock = [];
+                let from = 0;
+                let to = 999;
+                let hasMore = true;
+
+                while (hasMore) {
+                    const { data: chunk, error: chunkErr } = await supabase
+                        .from('base_part_master')
+                        .select('*')
+                        .gt('base_stock', 0)
+                        .range(from, to);
+
+                    if (chunkErr || !chunk || chunk.length === 0) {
+                        hasMore = false;
+                    } else {
+                        allBaseWithStock = [...allBaseWithStock, ...chunk];
+                        if (chunk.length < 1000) hasMore = false;
+                        else {
+                            from += 1000;
+                            to += 1000;
+                        }
+                    }
+                    if (allBaseWithStock.length > 5000) hasMore = false; // Safety cap
+                }
+
+                // Also fetch all Average Counts for these
+                const { data: nonCountedAvg } = await supabase
+                    .from('average_counts')
+                    .select('*');
+
+                const avgMapNC = {};
+                nonCountedAvg?.forEach(a => {
+                    avgMapNC[String(a.part_number || '').trim().toUpperCase()] = a.average_count;
+                });
 
                 const scanMap = {};
                 scans?.forEach(s => {
@@ -104,7 +148,7 @@ const Reports = () => {
                     scanMap[key] = s;
                 });
 
-                nonCountedMaster?.forEach(base => {
+                allBaseWithStock.forEach(base => {
                     const key = String(base.part_number || '').trim().toUpperCase();
                     const scan = scanMap[key];
                     const daily = latestDaily[key];
@@ -116,6 +160,8 @@ const Reports = () => {
                             description: base.description,
                             master_loc: daily?.latest_bin || base.default_bin || '---',
                             system_stock: currentSystemStock,
+                            avg_count: avgMapNC[key] || 0,
+                            category: base.category, // NEW
                             ddl: base.purchase_price || 0,
                             stock_value: currentSystemStock * (base.purchase_price || 0)
                         });
@@ -133,7 +179,9 @@ const Reports = () => {
                         diff,
                         ddl,
                         description: scan.description || bInfo.description || 'No Master Info',
+                        category: bInfo.category || '---',
                         master_loc: bInfo.default_bin || '---',
+                        avg_count: bInfo.average_count || 0,
                         diff_value: diff * ddl,
                         stock_value: scan.system_stock * ddl,
                         warehouse_loc: scan.locations?.name || '---'
@@ -143,6 +191,13 @@ const Reports = () => {
                     else if (activeTab === 'excess' && diff > 0) results.push(item);
                 });
             }
+
+            // Sort by Bin Location (A-Z)
+            results.sort((a, b) => {
+                const binA = String(a.master_loc || '').trim().toUpperCase();
+                const binB = String(b.master_loc || '').trim().toUpperCase();
+                return binA.localeCompare(binB);
+            });
 
             setData(results);
         } catch (err) {
@@ -157,9 +212,9 @@ const Reports = () => {
         setEditingItem(item);
         setEditData({
             physical_qty: item.physical_qty.toString(),
-            remark_type: item.remark_type || '',
             remark_detail: item.remark_detail || '',
-            damage_qty: item.damage_qty || 0
+            damage_qty: item.damage_qty || 0,
+            nn_carton_no: item.nn_carton_no || ''
         });
     };
 
@@ -173,7 +228,8 @@ const Reports = () => {
             difference: newDiff,
             remark_type: editData.remark_type,
             remark_detail: editData.remark_detail,
-            damage_qty: parseFloat(editData.damage_qty) || 0
+            damage_qty: parseFloat(editData.damage_qty) || 0,
+            nn_carton_no: editData.nn_carton_no
         }).eq('id', editingItem.id);
 
         if (error) {
@@ -215,7 +271,10 @@ const Reports = () => {
                     <button className="icon-btn" onClick={fetchData} title="Manual Refresh">
                         <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
                     </button>
-                    <button className="btn-excel" onClick={exportStockSummary}>
+                    <button
+                        className="btn-excel"
+                        onClick={() => exportFilteredReport(filteredData, activeTab.toUpperCase() + '_REPORT')}
+                    >
                         <Download size={16} />
                         <span>Export Excel</span>
                     </button>
@@ -244,21 +303,25 @@ const Reports = () => {
                             <tr>
                                 <th style={{ width: '130px' }}>PART NUM</th>
                                 <th style={{ width: '220px' }}>PART DESCRIPTION</th>
+                                <th style={{ width: '80px' }}>CAT</th>
                                 <th style={{ width: '100px' }} className="text-center">BIN LOCATION</th>
                                 <th className="text-right">SYSTEM</th>
                                 {activeTab !== 'non-counted' && (
                                     <>
                                         <th className="text-right">PHYSICAL</th>
+                                        <th className="text-right">AVG COUNT</th>
                                         <th className="text-right">DIFF</th>
                                         <th className="text-right">DDL</th>
                                         <th className="text-right">DIFF VALUE</th>
                                         <th style={{ width: '120px' }}>REMARK</th>
+                                        <th style={{ width: '100px' }}>CARTON NO</th>
                                         <th style={{ width: '120px' }}>W'HOUSE</th>
                                         <th style={{ width: '45px' }}>ACTION</th>
                                     </>
                                 )}
                                 {activeTab === 'non-counted' && (
                                     <>
+                                        <th className="text-right">AVG</th>
                                         <th className="text-right">DDL</th>
                                         <th className="text-right">VALUE</th>
                                     </>
@@ -267,9 +330,9 @@ const Reports = () => {
                         </thead>
                         <tbody>
                             {loading && data.length === 0 ? (
-                                <tr><td colSpan="12" className="empty-state">Fetching live data...</td></tr>
+                                <tr><td colSpan="13" className="empty-state">Fetching live data...</td></tr>
                             ) : filteredData.length === 0 ? (
-                                <tr><td colSpan="12" className="empty-state">No records found.</td></tr>
+                                <tr><td colSpan="13" className="empty-state">No records found.</td></tr>
                             ) : filteredData.map((item, idx) => (
                                 <tr key={idx}>
                                     <td>
@@ -286,12 +349,14 @@ const Reports = () => {
                                         )}
                                     </td>
                                     <td><span className="description" title={item.description}>{item.description}</span></td>
+                                    <td><span className="rmk-badge">{item.category || '---'}</span></td>
                                     <td className="text-center text-dim">{item.master_loc}</td>
                                     <td className="text-right bold">{item.system_stock}</td>
                                     {activeTab !== 'non-counted' && (
                                         <>
                                             <td className="text-right bold white">{item.physical_qty}</td>
-                                            <td className={`text-right bold ${item.diff < 0 ? 'text-red' : 'text-green'}`}>
+                                            <td className="text-right" style={{ color: '#a855f7' }}>{item.avg_count || 0}</td>
+                                            <td className={`text-right bold ${item.diff < 0 ? 'text-red' : item.diff > 0 ? 'text-green' : 'text-dim'}`}>
                                                 {item.diff > 0 ? `+${item.diff}` : item.diff}
                                             </td>
                                             <td className="text-right text-dim">{item.ddl.toFixed(2)}</td>
@@ -305,6 +370,7 @@ const Reports = () => {
                                                 </div>
                                             </td>
                                             <td><div className="loc-tag">{item.warehouse_loc}</div></td>
+                                            <td className="bold" style={{ color: '#ec4899' }}>{item.nn_carton_no || '-'}</td>
                                             <td className="text-center">
                                                 <button className="edit-btn" onClick={() => handleEditClick(item)}>
                                                     <Edit3 size={12} />
@@ -314,10 +380,9 @@ const Reports = () => {
                                     )}
                                     {activeTab === 'non-counted' && (
                                         <>
+                                            <td className="text-right" style={{ color: '#a855f7' }}>{item.avg_count || 0}</td>
                                             <td className="text-right text-dim">{item.ddl.toFixed(2)}</td>
-                                            <td className="text-right bold">
-                                                {item.stock_value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                            </td>
+                                            <td className="text-right bold">₹ {item.stock_value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                         </>
                                     )}
                                 </tr>
@@ -370,6 +435,10 @@ const Reports = () => {
                                 <div className="input-group full">
                                     <label>NN Remark Detail</label>
                                     <input type="text" value={editData.remark_detail} onChange={(e) => setEditData({ ...editData, remark_detail: e.target.value })} />
+                                </div>
+                                <div className="input-group full">
+                                    <label>Carton No (NN)</label>
+                                    <input type="text" value={editData.nn_carton_no} onChange={(e) => setEditData({ ...editData, nn_carton_no: e.target.value })} />
                                 </div>
                             </div>
                         </div>

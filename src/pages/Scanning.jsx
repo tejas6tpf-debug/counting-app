@@ -32,16 +32,19 @@ const Scanning = () => {
         description: '',
         binLocation: '',
         currentStock: 0,
+        averageCount: 0, // NEW
         phyQty: '',
         difference: 0,
         remarkType: '',
         remarkDetail: '',
         damageQty: 0,
-        newBin: ''
+        newBin: '',
+        nnCartonNo: '' // NEW
     });
 
     const [status, setStatus] = useState({ message: '', type: '' });
     const [allScans, setAllScans] = useState([]);
+    const [avgCountMap, setAvgCountMap] = useState({}); // NEW
     const [loading, setLoading] = useState(false);
 
     // Duplicate Scan Modal State
@@ -77,7 +80,25 @@ const Scanning = () => {
         const { data } = await supabase.from('scans')
             .select('*, locations(name)')
             .order('scan_time', { ascending: false });
-        if (data) setAllScans(data);
+
+        if (data) {
+            setAllScans(data);
+
+            // Fetch Average Counts for these parts
+            const uniquePNs = [...new Set(data.map(s => s.part_number))];
+            if (uniquePNs.length > 0) {
+                const { data: masters } = await supabase
+                    .from('average_counts')
+                    .select('part_number, average_count')
+                    .in('part_number', uniquePNs);
+
+                if (masters) {
+                    const map = {};
+                    masters.forEach(m => map[m.part_number] = m.average_count || 0);
+                    setAvgCountMap(map);
+                }
+            }
+        }
     };
 
     const handleLocationChange = (val) => {
@@ -143,8 +164,17 @@ const Scanning = () => {
                 .limit(1)
                 .single();
 
+            // 4. Get Average Count (Separate Table)
+            const { data: avgData } = await supabase
+                .from('average_counts')
+                .select('average_count')
+                .eq('part_number', pn)
+                .single();
+
             const systemStock = dailyInfo?.latest_stock || baseInfo.base_stock || 0;
             const systemBin = dailyInfo?.latest_bin || baseInfo.default_bin || 'NO BIN';
+
+            console.log('Part Found:', pn, 'BaseInfo:', baseInfo); // DEBUG LOG
 
             setCurrentData({
                 id: null,
@@ -153,6 +183,7 @@ const Scanning = () => {
                 description: baseInfo.description || '',
                 binLocation: systemBin,
                 currentStock: systemStock,
+                averageCount: avgData?.average_count || 0, // NEW
                 phyQty: '',
                 difference: -systemStock,
                 remarkType: '',
@@ -184,6 +215,15 @@ const Scanning = () => {
             setCurrentData(prev => ({ ...prev, remarkType: 'Damage' }));
             if (damageQtyRef.current) setTimeout(() => damageQtyRef.current.focus(), 50);
         }
+        else if (e.key.toLowerCase() === 'n') {
+            e.preventDefault();
+            setCurrentData(prev => ({ ...prev, remarkDetail: 'NN' }));
+            // We'll focus the NN Carton No input next
+            setTimeout(() => {
+                const nnInput = document.getElementById('nn-carton-input');
+                if (nnInput) nnInput.focus();
+            }, 50);
+        }
         else if (e.key === '`') {
             e.preventDefault();
             if (newBinRef.current) setTimeout(() => newBinRef.current.focus(), 50);
@@ -214,6 +254,7 @@ const Scanning = () => {
                 remark_type: currentData.remarkType,
                 remark_detail: currentData.remarkDetail,
                 damage_qty: parseFloat(currentData.damageQty) || 0,
+                nn_carton_no: currentData.nnCartonNo, // NEW
                 scanned_by: profile?.username || 'Admin',
                 location_id: selectedLocation,
                 pc_name: 'PC-1'
@@ -232,7 +273,8 @@ const Scanning = () => {
             setCurrentData({
                 id: null, partNumber: '', scanCode: '', description: '', binLocation: '',
                 currentStock: 0, phyQty: '', difference: 0, remarkType: '', remarkDetail: '',
-                damageQty: 0, newBin: ''
+                damageQty: 0, newBin: '',
+                nnCartonNo: '' // RESET
             });
             setScanInput('');
             setManualPartInput('');
@@ -258,7 +300,8 @@ const Scanning = () => {
             remarkType: scan.remark_type || '',
             remarkDetail: scan.remark_detail || '',
             damageQty: scan.damage_qty || 0,
-            newBin: scan.new_bin_location || ''
+            newBin: scan.new_bin_location || '',
+            nnCartonNo: scan.nn_carton_no || '' // EDIT LOAD
         });
         window.scrollTo({ top: 0, behavior: 'smooth' });
         if (phyQtyRef.current) setTimeout(() => phyQtyRef.current.focus(), 300);
@@ -336,6 +379,7 @@ const Scanning = () => {
                     <span><UserIcon size={14} className="inline-icon" /> {profile?.username || 'Admin'}</span>
                     <span><kbd>Enter</kbd> Save</span>
                     <span><kbd>D</kbd> Damage</span>
+                    <span><kbd>N</kbd> NN Remark</span>
                     <span><kbd>`</kbd> New Bin</span>
                 </div>
                 <button className="delete-all-btn" onClick={handleDeleteAll} title="Delete all scan entries">
@@ -382,10 +426,12 @@ const Scanning = () => {
                         <div className="h-col dsc">Description</div>
                         <div className="h-col bin">Old Bin</div>
                         <div className="h-col stk">Stk</div>
+                        <div className="h-col avg">Avg</div>
                         <div className="h-col dif">Diff</div>
                         <div className="h-col dmq">Dmg Qty</div>
                         <div className="h-col rem">Remark</div>
                         <div className="h-col rmx">Remark Details</div>
+                        <div className="h-col ctn">Carton No</div>
                         <div className="h-col nbl">New Bin</div>
                         <div className="h-col act">Action</div>
                     </div>
@@ -404,6 +450,7 @@ const Scanning = () => {
                         <div className="h-col dsc"><input readOnly value={currentData.description} /></div>
                         <div className="h-col bin"><input readOnly value={currentData.binLocation} /></div>
                         <div className="h-col stk"><input readOnly value={currentData.currentStock} /></div>
+                        <div className="h-col avg"><input readOnly value={currentData.averageCount || 0} style={{ color: '#a855f7' }} /></div>
                         <div className="h-col dif">
                             <input readOnly value={currentData.difference} className={currentData.difference < 0 ? 'minus' : currentData.difference > 0 ? 'plus' : ''} />
                         </div>
@@ -431,6 +478,15 @@ const Scanning = () => {
                                 placeholder="Detail..."
                             />
                         </div>
+                        <div className="h-col ctn">
+                            <input
+                                id="nn-carton-input"
+                                type="text"
+                                value={currentData.nnCartonNo} onChange={(e) => setCurrentData(prev => ({ ...prev, nnCartonNo: e.target.value }))}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+                                placeholder="Carton..."
+                            />
+                        </div>
                         <div className="h-col nbl">
                             <input
                                 ref={newBinRef} type="text"
@@ -455,14 +511,16 @@ const Scanning = () => {
                                 <div className="h-col sc truncate">{scan.scan_code}</div>
                                 <div className="h-col qty bold">{scan.physical_qty}</div>
                                 <div className="h-col dsc truncate">{scan.description}</div>
-                                <div className="h-col bin">{scan.actual_bin}</div>
+                                <div className="h-col bin">{scan.actual_bin || '---'}</div>
                                 <div className="h-col stk">{scan.system_stock}</div>
+                                <div className="h-col avg" style={{ color: '#a855f7' }}>{avgCountMap[scan.part_number] || 0}</div>
                                 <div className={`h-col dif ${scan.difference < 0 ? 'minus' : scan.difference > 0 ? 'plus' : ''}`}>
-                                    {scan.difference}
+                                    {scan.difference > 0 ? '+' + scan.difference : scan.difference}
                                 </div>
                                 <div className="h-col dmq bold text-orange">{scan.damage_qty || 0}</div>
                                 <div className="h-col rem">{scan.remark_type}</div>
                                 <div className="h-col rmx truncate">{scan.remark_detail}</div>
+                                <div className="h-col ctn">{scan.nn_carton_no || '---'}</div>
                                 <div className="h-col nbl">{scan.new_bin_location}</div>
                                 <div className="h-col act">
                                     <div className="action-buttons">
@@ -483,77 +541,79 @@ const Scanning = () => {
             </div>
 
             {/* DUPLICATE SCAN MODAL */}
-            {duplicateModal.show && duplicateModal.existingScan && (
-                <div className="modal-overlay" onClick={() => setDuplicateModal({ show: false, existingScan: null })}>
-                    <div className="duplicate-modal" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <AlertCircle size={24} color="#f59e0b" />
-                            <h3>Duplicate Part Detected</h3>
-                        </div>
-                        <div className="modal-body">
-                            <div className="dup-info-row">
-                                <span className="dup-label">Part Number:</span>
-                                <span className="dup-value part-no">{duplicateModal.existingScan.part_number}</span>
+            {
+                duplicateModal.show && duplicateModal.existingScan && (
+                    <div className="modal-overlay" onClick={() => setDuplicateModal({ show: false, existingScan: null })}>
+                        <div className="duplicate-modal" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <AlertCircle size={24} color="#f59e0b" />
+                                <h3>Duplicate Part Detected</h3>
                             </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Description:</span>
-                                <span className="dup-value">{duplicateModal.existingScan.description}</span>
+                            <div className="modal-body">
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Part Number:</span>
+                                    <span className="dup-value part-no">{duplicateModal.existingScan.part_number}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Description:</span>
+                                    <span className="dup-value">{duplicateModal.existingScan.description}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Scanned By:</span>
+                                    <span className="dup-value user-highlight">
+                                        <UserIcon size={14} />
+                                        {duplicateModal.existingScan.scanned_by}
+                                    </span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Scanned At:</span>
+                                    <span className="dup-value">{new Date(duplicateModal.existingScan.created_at).toLocaleString('en-IN')}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Location:</span>
+                                    <span className="dup-value">{duplicateModal.existingScan.locations?.name || 'Unknown'}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Current Stock:</span>
+                                    <span className="dup-value">{duplicateModal.existingScan.system_stock}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Physical Qty:</span>
+                                    <span className="dup-value qty-highlight">{duplicateModal.existingScan.physical_qty}</span>
+                                </div>
+                                <div className="dup-info-row">
+                                    <span className="dup-label">Difference:</span>
+                                    <span className={`dup-value ${duplicateModal.existingScan.difference < 0 ? 'diff-negative' : duplicateModal.existingScan.difference > 0 ? 'diff-positive' : ''}`}>
+                                        {duplicateModal.existingScan.difference}
+                                    </span>
+                                </div>
+                                <div className="modal-warning">
+                                    <Info size={16} />
+                                    <span>This part has already been scanned. You can edit the existing entry or cancel.</span>
+                                </div>
                             </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Scanned By:</span>
-                                <span className="dup-value user-highlight">
-                                    <UserIcon size={14} />
-                                    {duplicateModal.existingScan.scanned_by}
-                                </span>
+                            <div className="modal-actions">
+                                <button
+                                    className="btn-edit"
+                                    onClick={() => {
+                                        handleEdit(duplicateModal.existingScan);
+                                        setDuplicateModal({ show: false, existingScan: null });
+                                    }}
+                                >
+                                    <Edit2 size={16} />
+                                    Edit Existing Entry
+                                </button>
+                                <button
+                                    className="btn-cancel"
+                                    onClick={() => setDuplicateModal({ show: false, existingScan: null })}
+                                >
+                                    Cancel
+                                </button>
                             </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Scanned At:</span>
-                                <span className="dup-value">{new Date(duplicateModal.existingScan.created_at).toLocaleString('en-IN')}</span>
-                            </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Location:</span>
-                                <span className="dup-value">{duplicateModal.existingScan.locations?.name || 'Unknown'}</span>
-                            </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Current Stock:</span>
-                                <span className="dup-value">{duplicateModal.existingScan.system_stock}</span>
-                            </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Physical Qty:</span>
-                                <span className="dup-value qty-highlight">{duplicateModal.existingScan.physical_qty}</span>
-                            </div>
-                            <div className="dup-info-row">
-                                <span className="dup-label">Difference:</span>
-                                <span className={`dup-value ${duplicateModal.existingScan.difference < 0 ? 'diff-negative' : duplicateModal.existingScan.difference > 0 ? 'diff-positive' : ''}`}>
-                                    {duplicateModal.existingScan.difference}
-                                </span>
-                            </div>
-                            <div className="modal-warning">
-                                <Info size={16} />
-                                <span>This part has already been scanned. You can edit the existing entry or cancel.</span>
-                            </div>
-                        </div>
-                        <div className="modal-actions">
-                            <button
-                                className="btn-edit"
-                                onClick={() => {
-                                    handleEdit(duplicateModal.existingScan);
-                                    setDuplicateModal({ show: false, existingScan: null });
-                                }}
-                            >
-                                <Edit2 size={16} />
-                                Edit Existing Entry
-                            </button>
-                            <button
-                                className="btn-cancel"
-                                onClick={() => setDuplicateModal({ show: false, existingScan: null })}
-                            >
-                                Cancel
-                            </button>
                         </div>
                     </div>
-                </div>
-            )}
+                )
+            }
 
             <style jsx="true">{`
                 .fast-scan-container {
@@ -658,13 +718,20 @@ const Scanning = () => {
 
                 .ss-header, .ss-row {
                     display: grid;
-                    grid-template-columns: 120px 140px 80px 1fr 100px 70px 70px 80px 110px 140px 100px 140px;
+                    grid-template-columns: 120px 140px 80px 1fr 100px 70px 70px 80px 80px 110px 140px 100px 100px 140px;
                     border-bottom: 1px solid #222;
                 }
 
                 .ss-header { background: #222; position: sticky; top: 0; z-index: 10; }
-                .h-col { padding: 0.5rem; font-size: 0.75rem; color: #999; font-weight: 600; border-right: 1px solid #222; display: flex; align-items: center; overflow: hidden; }
+                .h-col { padding: 0.5rem; font-size: 0.75rem; color: #999; font-weight: 600; border-right: 1px solid #222; display: flex; align-items: center; overflow: hidden; white-space: nowrap; }
                 .ss-header .h-col { text-transform: uppercase; color: #555; }
+                .h-col.pn { color: #fff; font-weight: 600; }
+                .h-col.sc { color: #888; font-size: 0.85rem; }
+                .h-col.qty input { background: #333; border: 1px solid #444; color: #fff; width: 60px; padding: 4px; border-radius: 4px; text-align: right; }
+                .h-col.qty input:focus { border-color: #3b82f6; background: #000; }
+                .h-col.dsc { color: #aaa; font-size: 0.85rem; }
+                .h-col.bin { color: #f59e0b; font-family: monospace; }
+                .h-col.stk, .h-col.avg { color: #666; justify-content: flex-end; }
 
                 .entry-row { background: #1e293b; height: 40px; }
                 .entry-row input, .entry-row select { width: 100%; background: transparent; border: none; color: white; font-size: 0.9rem; outline: none; padding: 0.2rem; }
@@ -867,7 +934,7 @@ const Scanning = () => {
                     }
                 }
             `}</style>
-        </div>
+        </div >
     );
 };
 

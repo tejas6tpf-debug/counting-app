@@ -64,18 +64,31 @@ const FinalSheet = () => {
             // 2. Identify unique part numbers from scans
             const uniquePNs = [...new Set(scans.map(s => s.part_number))];
 
-            // 3. Fetch Master data ONLY for these parts (bypasses 1000-row global limit issues)
-            const { data: baseMaster, error: masterErr } = await supabase
+            // 3. Fetch Master data ONLY for these parts
+            const { data: baseMaster } = await supabase
                 .from('base_part_master')
                 .select('part_number, purchase_price, default_bin')
                 .in('part_number', uniquePNs);
 
-            if (masterErr) console.error('Master Fetch Error:', masterErr);
+            // Fetch Average Counts (Dedicated Table)
+            const { data: avgMasters } = await supabase
+                .from('average_counts')
+                .select('part_number, average_count')
+                .in('part_number', uniquePNs);
 
             const masterMap = {};
             baseMaster?.forEach(m => {
                 const key = String(m.part_number || '').trim().toUpperCase();
-                masterMap[key] = m;
+                masterMap[key] = { ...m, average_count: 0 };
+            });
+
+            avgMasters?.forEach(am => {
+                const key = String(am.part_number || '').trim().toUpperCase();
+                if (masterMap[key]) {
+                    masterMap[key].average_count = am.average_count;
+                } else {
+                    masterMap[key] = { part_number: am.part_number, average_count: am.average_count, purchase_price: 0, default_bin: '---' };
+                }
             });
 
             // 4. Enrich data
@@ -88,11 +101,19 @@ const FinalSheet = () => {
                 return {
                     ...scan,
                     master_loc: master.default_bin || '---',
+                    avg_count: master.average_count || 0, // NEW
                     ddl,
                     diff_value: diff * ddl,
                     stock_value: scan.system_stock * ddl,
                     warehouse_loc: scan.locations?.name || '---'
                 };
+            });
+
+            // Sort by Bin Location (A-Z)
+            enrichedData.sort((a, b) => {
+                const binA = String(a.master_loc || '').trim().toUpperCase();
+                const binB = String(b.master_loc || '').trim().toUpperCase();
+                return binA.localeCompare(binB);
             });
 
             setData(enrichedData);
@@ -109,7 +130,8 @@ const FinalSheet = () => {
             physical_qty: item.physical_qty.toString(),
             remark_type: item.remark_type || '',
             remark_detail: item.remark_detail || '',
-            damage_qty: item.damage_qty || 0
+            damage_qty: item.damage_qty || 0,
+            nn_carton_no: item.nn_carton_no || '' // NEW
         });
     };
 
@@ -124,7 +146,8 @@ const FinalSheet = () => {
             difference: newDiff,
             remark_type: editData.remark_type,
             remark_detail: editData.remark_detail,
-            damage_qty: parseFloat(editData.damage_qty) || 0
+            damage_qty: parseFloat(editData.damage_qty) || 0,
+            nn_carton_no: editData.nn_carton_no // NEW
         }).eq('id', editingItem.id);
 
         if (error) {
@@ -225,12 +248,14 @@ const FinalSheet = () => {
                                 <th style={{ width: '100px' }} className="text-center">BIN LOCATION</th>
                                 <th className="text-right">CURRENT STOCK</th>
                                 <th className="text-right">PHY. QTY</th>
+                                <th className="text-right">AVG COUNT</th>
                                 <th className="text-right">DIFF. QTY</th>
                                 <th className="text-right">DDL</th>
                                 <th className="text-right">DIFF VALUE</th>
                                 <th className="text-right">STOCK VALUE</th>
                                 <th style={{ width: '150px' }}>REMARK (Dmg/Intchg)</th>
                                 <th style={{ width: '150px' }}>REMARK 1 (NN)</th>
+                                <th style={{ width: '100px' }}>CARTON NO</th>
                                 <th style={{ width: '100px' }}>NEW LOC</th>
                                 <th style={{ width: '110px' }}>WAREHOUSE</th>
                                 <th style={{ width: '100px' }}>DATE</th>
@@ -240,9 +265,9 @@ const FinalSheet = () => {
                         </thead>
                         <tbody>
                             {loading && data.length === 0 ? (
-                                <tr><td colSpan="17" className="empty-state">Loading audit data...</td></tr>
+                                <tr><td colSpan="18" className="empty-state">Loading audit data...</td></tr>
                             ) : filteredData.length === 0 ? (
-                                <tr><td colSpan="17" className="empty-state">No scan records found.</td></tr>
+                                <tr><td colSpan="18" className="empty-state">No scan records found.</td></tr>
                             ) : filteredData.map((item, idx) => {
                                 const hasVariance = item.difference !== 0;
                                 return (
@@ -258,10 +283,11 @@ const FinalSheet = () => {
                                             </span>
                                         </td>
                                         <td><span className="description" title={item.description}>{item.description}</span></td>
-                                        <td className="text-center text-dim">{item.master_loc}</td>
-                                        <td className="text-right bold">{item.system_stock}</td>
-                                        <td className="text-right bold white">{item.physical_qty}</td>
-                                        <td className={`text-right bold ${item.difference < 0 ? 'text-red' : item.difference > 0 ? 'text-green' : 'text-dim'}`}>
+                                        <td className="text-center font-mono text-orange">{item.master_loc}</td>
+                                        <td className="text-right">{item.system_stock}</td>
+                                        <td className="text-right font-bold">{item.physical_qty}</td>
+                                        <td className="text-right" style={{ color: '#a855f7' }}>{item.avg_count || 0}</td>
+                                        <td className={`text-right font-bold ${item.difference < 0 ? 'text-red' : item.difference > 0 ? 'text-green' : 'text-dim'}`}>
                                             {item.difference > 0 ? `+${item.difference}` : item.difference}
                                         </td>
                                         <td className="text-right text-dim">{item.ddl.toFixed(2)}</td>
@@ -280,6 +306,7 @@ const FinalSheet = () => {
                                             ) : '-'}
                                         </td>
                                         <td><span className="remark-detail">{item.remark_detail || '-'}</span></td>
+                                        <td className="bold" style={{ color: '#ec4899' }}>{item.nn_carton_no || '-'}</td>
                                         <td><span className="bin-tag">{item.new_bin_location || '-'}</span></td>
                                         <td><div className="loc-tag">{item.warehouse_loc}</div></td>
                                         <td className="text-dim" style={{ fontSize: '0.7rem' }}>{formatDate(item.created_at)}</td>
@@ -354,6 +381,15 @@ const FinalSheet = () => {
                                         placeholder="Reason for change..."
                                         value={editData.remark_detail}
                                         onChange={(e) => setEditData({ ...editData, remark_detail: e.target.value })}
+                                    />
+                                </div>
+                                <div className="input-group full">
+                                    <label>Carton No (NN)</label>
+                                    <input
+                                        type="text"
+                                        placeholder="Box/Carton No..."
+                                        value={editData.nn_carton_no}
+                                        onChange={(e) => setEditData({ ...editData, nn_carton_no: e.target.value })}
                                     />
                                 </div>
                             </div>
