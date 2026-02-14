@@ -55,6 +55,7 @@ const Reports = () => {
             // 1. Fetch ALL Scans for the basic list
             // Using new helper to bypass 1000 row limit
             const { fetchAllRecords } = await import('../lib/supabase');
+            // Using stable sort (scan_time, id) to prevent missing items in pagination
             const scans = await fetchAllRecords('scans', '*, locations(name)', null, 'scan_time', false);
 
             if (!scans && activeTab !== 'non-counted') {
@@ -65,28 +66,37 @@ const Reports = () => {
             // 2. Identify parts needed for enrichment
             const uniquePNs = [...new Set(scans?.map(s => s.part_number) || [])];
 
-            // 3. Fetch Master data specifically for these parts
-            const { data: bMaster, error: bErr } = await supabase
-                .from('base_part_master')
-                .select('*')
-                .in('part_number', uniquePNs);
+            // 3. Fetch Master data specifically for these parts (Chunked)
+            const { fetchByPartNumbers } = await import('../lib/supabase');
 
-            if (bErr) console.error('Base Master Error:', bErr);
-
-            const { data: dailyMaster } = await supabase
-                .from('daily_part_master')
-                .select('*')
-                .in('part_number', uniquePNs);
-
-            const { data: avgMasters } = await supabase
-                .from('average_counts')
-                .select('*')
-                .in('part_number', uniquePNs);
+            const bMaster = await fetchByPartNumbers('base_part_master', uniquePNs);
+            const dailyMaster = await fetchByPartNumbers('daily_part_master', uniquePNs);
+            const avgMasters = await fetchByPartNumbers('average_counts', uniquePNs);
 
             const masterMap = {};
             bMaster?.forEach(m => {
                 const key = String(m.part_number || '').trim().toUpperCase();
                 masterMap[key] = { ...m, average_count: 0 };
+            });
+
+            // Merge Daily Master (fills gaps for parts not in base)
+            dailyMaster?.forEach(d => {
+                const key = String(d.part_number || '').trim().toUpperCase();
+                if (!masterMap[key]) {
+                    masterMap[key] = {
+                        part_number: d.part_number,
+                        description: d.description || '',
+                        category: d.category || '',
+                        default_bin: d.latest_bin || '',
+                        purchase_price: d.purchase_price || 0,
+                        average_count: 0
+                    };
+                } else {
+                    // Enrich existing base info if meta is missing
+                    masterMap[key].description = masterMap[key].description || d.description;
+                    masterMap[key].category = masterMap[key].category || d.category;
+                    masterMap[key].default_bin = masterMap[key].default_bin || d.latest_bin;
+                }
             });
 
             avgMasters?.forEach(am => {
@@ -132,7 +142,7 @@ const Reports = () => {
                             to += 1000;
                         }
                     }
-                    if (allBaseWithStock.length > 5000) hasMore = false; // Safety cap
+                    if (allBaseWithStock.length > 50000) hasMore = false; // Increased safety cap to 50k
                 }
 
                 // Also fetch all Average Counts for these
@@ -181,9 +191,10 @@ const Reports = () => {
                         ...scan,
                         diff,
                         ddl,
-                        description: scan.description || bInfo.description || 'No Master Info',
-                        category: bInfo.category || '---',
-                        master_loc: bInfo.default_bin || '---',
+                        // Fallback to Scan record data if Master data is missing (for parts not in Base Master)
+                        description: bInfo.description || scan.description || 'No Master Info',
+                        category: bInfo.category || scan.category || '---',
+                        master_loc: bInfo.default_bin || scan.actual_bin || '---',
                         avg_count: bInfo.average_count || 0,
                         diff_value: diff * ddl,
                         stock_value: scan.system_stock * ddl,

@@ -62,22 +62,41 @@ const FinalSheet = () => {
             // 2. Identify unique part numbers from scans
             const uniquePNs = [...new Set(scans.map(s => s.part_number))];
 
-            // 3. Fetch Master data ONLY for these parts
-            const { data: baseMaster } = await supabase
-                .from('base_part_master')
-                .select('part_number, purchase_price, default_bin')
-                .in('part_number', uniquePNs);
+            // 3. Fetch Master data ONLY for these parts (Chunked)
+            const { fetchByPartNumbers } = await import('../lib/supabase');
 
-            // Fetch Average Counts (Dedicated Table)
-            const { data: avgMasters } = await supabase
-                .from('average_counts')
-                .select('part_number, average_count')
-                .in('part_number', uniquePNs);
+            const baseMaster = await fetchByPartNumbers('base_part_master', uniquePNs, 'part_number', 'part_number, description, category, purchase_price, default_bin');
+
+            // New: Fetch Daily Master metadata too for parts not in base
+            const dailyMaster = await fetchByPartNumbers('daily_part_master', uniquePNs, 'part_number', 'part_number, description, category, purchase_price, latest_bin');
+
+            // Fetch Average Counts (Dedicated Table - Chunked)
+            const avgMasters = await fetchByPartNumbers('average_counts', uniquePNs, 'part_number', 'part_number, average_count');
 
             const masterMap = {};
             baseMaster?.forEach(m => {
                 const key = String(m.part_number || '').trim().toUpperCase();
                 masterMap[key] = { ...m, average_count: 0 };
+            });
+
+            // Merge Daily Master (fills gaps for parts not in base)
+            dailyMaster?.forEach(d => {
+                const key = String(d.part_number || '').trim().toUpperCase();
+                if (!masterMap[key]) {
+                    masterMap[key] = {
+                        part_number: d.part_number,
+                        description: d.description || '',
+                        category: d.category || '',
+                        default_bin: d.latest_bin || '',
+                        purchase_price: d.purchase_price || 0,
+                        average_count: 0
+                    };
+                } else {
+                    // Enrich existing base info if meta is missing
+                    masterMap[key].description = masterMap[key].description || d.description;
+                    masterMap[key].category = masterMap[key].category || d.category;
+                    masterMap[key].default_bin = masterMap[key].default_bin || d.latest_bin;
+                }
             });
 
             avgMasters?.forEach(am => {
@@ -94,12 +113,17 @@ const FinalSheet = () => {
                 const scanKey = String(scan.part_number || '').trim().toUpperCase();
                 const master = masterMap[scanKey] || {};
                 const ddl = master.purchase_price || 0;
+
+                // Fallback to scan record's own data if master info is missing
+                // This happens for parts added via Daily Upload that aren't in Base Master
+                const binLocation = master.default_bin || scan.actual_bin || '---';
+
                 const diff = scan.physical_qty - scan.system_stock;
 
                 return {
                     ...scan,
-                    master_loc: master.default_bin || '---',
-                    avg_count: master.average_count || 0, // NEW
+                    master_loc: binLocation,
+                    avg_count: master.average_count || 0,
                     ddl,
                     diff_value: diff * ddl,
                     stock_value: scan.system_stock * ddl,

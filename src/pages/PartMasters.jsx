@@ -49,7 +49,20 @@ const PartMasters = () => {
     };
 
     const uploadDailyMaster = async (rows) => {
-        const formattedData = rows.map(row => ({ part_number: String(row['A'] || '').toUpperCase().trim(), latest_bin: row['C'] || '', latest_stock: parseFloat(row['D'] || 0) })).filter(item => item.part_number);
+        const formattedData = rows.map(row => {
+            const pn = String(row['A'] || row['B'] || '').toUpperCase().trim();
+            if (!pn) return null;
+
+            return {
+                part_number: pn,
+                latest_bin: row['C'] || row['F'] || '',
+                latest_stock: parseFloat(row['D'] || row['L'] || 0),
+                // Metadata for parts not in Base Master
+                description: row['D'] || '', // Fallback description if B/F format is used
+                category: row['E'] || '',
+                purchase_price: parseFloat(row['G'] || 0)
+            };
+        }).filter(Boolean);
         await handleDeleteMaster('daily'); // Auto-clear old daily
         const { error } = await supabase.from('daily_part_master').insert(formattedData);
         if (error) setUploadStatus({ message: 'Daily Upload failed: ' + error.message, type: 'error' });

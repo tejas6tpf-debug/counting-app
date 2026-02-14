@@ -179,8 +179,8 @@ const Scanning = () => {
 
             const systemStock = dailyInfo?.latest_stock || baseInfo?.base_stock || 0;
             const systemBin = dailyInfo?.latest_bin || baseInfo?.default_bin || 'NO BIN';
-            const description = baseInfo?.description || 'No Master Desc';
-            const category = baseInfo?.category || 'Unknown';
+            const description = baseInfo?.description || dailyInfo?.description || 'No Master Desc';
+            const category = baseInfo?.category || dailyInfo?.category || 'Unknown';
 
             setCurrentData({
                 id: null,

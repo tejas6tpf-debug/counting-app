@@ -13,17 +13,12 @@ export const exportStockSummary = async () => {
         // 2. Identify unique parts needed for enrichment
         const uniquePNs = [...new Set(scans.map(s => s.part_number))];
 
-        // 3. Fetch Master data specifically for these parts
-        const { data: baseMaster } = await supabase
-            .from('base_part_master')
-            .select('*')
-            .in('part_number', uniquePNs);
+        // 3. Fetch Master data specifically for these parts (Chunked)
+        // Using fetchByPartNumbers helper
+        const baseMaster = await import('../lib/supabase').then(mod => mod.fetchByPartNumbers('base_part_master', uniquePNs));
 
         // Fetch Average Counts (Dedicated Table)
-        const { data: avgMasters } = await supabase
-            .from('average_counts')
-            .select('*')
-            .in('part_number', uniquePNs);
+        const avgMasters = await import('../lib/supabase').then(mod => mod.fetchByPartNumbers('average_counts', uniquePNs, 'part_number', 'part_number, average_count'));
 
         if (!baseMaster) throw new Error('Failed to fetch master data');
 
@@ -53,8 +48,8 @@ export const exportStockSummary = async () => {
             fullAuditList.push({
                 'SR NO': idx + 1,
                 'PART NUM': scan.part_number,
-                'PART DESCRIPTION': scan.description || master.description || '---',
-                'BIN LOCATION': master.default_bin || '---',
+                'PART DESCRIPTION': master.description || scan.description || '---',
+                'BIN LOCATION': master.default_bin || scan.actual_bin || '---',
                 'CURRENT STOCK': scan.system_stock,
                 'PHY. QTY': scan.physical_qty,
                 'AVG COUNT': master.average_count || 0, // NEW

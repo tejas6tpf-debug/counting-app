@@ -28,6 +28,7 @@ export const fetchAllRecords = async (tableName, selectQuery = '*', filter = nul
             .from(tableName)
             .select(selectQuery)
             .order(orderBy, { ascending })
+            .order('id', { ascending: true }) // Stable sort for pagination
             .range(from, from + step - 1);
 
         if (filter) {
@@ -47,6 +48,38 @@ export const fetchAllRecords = async (tableName, selectQuery = '*', filter = nul
             if (data.length < step) hasMore = false;
         } else {
             hasMore = false;
+        }
+    }
+
+    return allData;
+};
+
+/**
+ * Helper to fetch data for a large list of IDs/PartNumbers in chunks.
+ * Solves the URL length limit / query limit issue with .in() filters.
+ * @param {string} tableName - Table to fetch from.
+ * @param {string[]} values - Array of values to match (e.g. part numbers).
+ * @param {string} column - Column to match against (default: 'part_number').
+ */
+export const fetchByPartNumbers = async (tableName, values, column = 'part_number', selectQuery = '*') => {
+    if (!values || values.length === 0) return [];
+
+    const uniqueValues = [...new Set(values)];
+    let allData = [];
+    const chunkSize = 200; // Safe limit for .in() queries
+
+    for (let i = 0; i < uniqueValues.length; i += chunkSize) {
+        const chunk = uniqueValues.slice(i, i + chunkSize);
+        const { data, error } = await supabase
+            .from(tableName)
+            .select(selectQuery)
+            .in(column, chunk);
+
+        if (error) {
+            console.error(`Error fetching chunk from ${tableName}:`, error);
+            // We continue trying other chunks instead of throwing immediately
+        } else if (data) {
+            allData = [...allData, ...data];
         }
     }
 
