@@ -53,11 +53,14 @@ const Reports = () => {
         setLoading(true);
         try {
             // 1. Fetch ALL Scans for the basic list
-            const { data: scans, error: scanErr } = await supabase
-                .from('scans')
-                .select('*, locations(name)');
+            // Using new helper to bypass 1000 row limit
+            const { fetchAllRecords } = await import('../lib/supabase');
+            const scans = await fetchAllRecords('scans', '*, locations(name)', null, 'scan_time', false);
 
-            if (scanErr) throw scanErr;
+            if (!scans && activeTab !== 'non-counted') {
+                setData([]);
+                return;
+            }
 
             // 2. Identify parts needed for enrichment
             const uniquePNs = [...new Set(scans?.map(s => s.part_number) || [])];

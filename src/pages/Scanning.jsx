@@ -77,27 +77,32 @@ const Scanning = () => {
     };
 
     const fetchAllScans = async () => {
-        const { data } = await supabase.from('scans')
-            .select('*, locations(name)')
-            .order('scan_time', { ascending: false });
+        try {
+            // Using new helper to bypass 1000 row limit
+            const { fetchAllRecords } = await import('../lib/supabase');
+            const data = await fetchAllRecords('scans', '*, locations(name)', null, 'scan_time', false);
 
-        if (data) {
-            setAllScans(data);
+            if (data) {
+                setAllScans(data);
 
-            // Fetch Average Counts for these parts
-            const uniquePNs = [...new Set(data.map(s => s.part_number))];
-            if (uniquePNs.length > 0) {
-                const { data: masters } = await supabase
-                    .from('average_counts')
-                    .select('part_number, average_count')
-                    .in('part_number', uniquePNs);
+                // Fetch Average Counts for these parts
+                const uniquePNs = [...new Set(data.map(s => s.part_number))];
+                if (uniquePNs.length > 0) {
+                    const { data: masters } = await supabase
+                        .from('average_counts')
+                        .select('part_number, average_count')
+                        .in('part_number', uniquePNs);
 
-                if (masters) {
-                    const map = {};
-                    masters.forEach(m => map[m.part_number] = m.average_count || 0);
-                    setAvgCountMap(map);
+                    if (masters) {
+                        const map = {};
+                        masters.forEach(m => map[m.part_number] = m.average_count || 0);
+                        setAvgCountMap(map);
+                    }
                 }
             }
+        } catch (error) {
+            console.error('Error fetching scans:', error);
+            setStatus({ message: 'Failed to load historical scans.', type: 'error' });
         }
     };
 

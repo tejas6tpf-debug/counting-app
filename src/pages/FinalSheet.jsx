@@ -50,12 +50,10 @@ const FinalSheet = () => {
         setLoading(true);
         try {
             // 1. Fetch ALL Scans first to know which parts we need
-            const { data: scans, error: scanErr } = await supabase
-                .from('scans')
-                .select('*, locations(name)')
-                .order('created_at', { ascending: false });
+            // Using new helper to bypass 1000 row limit
+            const { fetchAllRecords } = await import('../lib/supabase');
+            const scans = await fetchAllRecords('scans', '*, locations(name)', null, 'created_at', false);
 
-            if (scanErr) throw scanErr;
             if (!scans || scans.length === 0) {
                 setData([]);
                 return;

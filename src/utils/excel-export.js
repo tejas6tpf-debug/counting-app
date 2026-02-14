@@ -4,12 +4,11 @@ import { supabase } from '../lib/supabase';
 export const exportStockSummary = async () => {
     try {
         // 1. Fetch ALL Scans first (this is the core of the Final Sheet)
-        const { data: scans, error: scanErr } = await supabase
-            .from('scans')
-            .select('*, locations(name)')
-            .order('created_at', { ascending: false });
+        // Using new helper to bypass 1000 row limit
+        const { fetchAllRecords } = await import('../lib/supabase');
+        const scans = await fetchAllRecords('scans', '*, locations(name)', null, 'created_at', false);
 
-        if (scanErr || !scans) throw new Error('Failed to fetch scans');
+        if (!scans || scans.length === 0) throw new Error('No scan data found');
 
         // 2. Identify unique parts needed for enrichment
         const uniquePNs = [...new Set(scans.map(s => s.part_number))];
