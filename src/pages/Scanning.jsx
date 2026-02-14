@@ -144,8 +144,18 @@ const Scanning = () => {
                 .eq('part_number', pn)
                 .single();
 
-            if (baseError || !baseInfo) {
-                setStatus({ message: `Part ${pn} Missing in Master!`, type: 'error' });
+            // 3. Get Daily/Latest Info
+            const { data: dailyInfo } = await supabase
+                .from('daily_part_master')
+                .select('*')
+                .eq('part_number', pn)
+                .order('upload_date', { ascending: false })
+                .limit(1)
+                .single();
+
+            // 4. Handle Missing Base Master (but might exist in Daily)
+            if (!baseInfo && !dailyInfo) {
+                setStatus({ message: `Part ${pn} Missing in BOTH Masters!`, type: 'error' });
                 setCurrentData(prev => ({
                     id: null, partNumber: pn, scanCode: code, damageQty: 0,
                     description: '', binLocation: '', currentStock: 0, phyQty: '',
@@ -155,39 +165,31 @@ const Scanning = () => {
                 return;
             }
 
-            // 3. Get Daily/Latest Info (Stock & Bin)
-            const { data: dailyInfo } = await supabase
-                .from('daily_part_master')
-                .select('latest_bin, latest_stock')
-                .eq('part_number', pn)
-                .order('upload_date', { ascending: false })
-                .limit(1)
-                .single();
-
-            // 4. Get Average Count (Separate Table)
+            // 5. Get Average Count (Separate Table)
             const { data: avgData } = await supabase
                 .from('average_counts')
                 .select('average_count')
                 .eq('part_number', pn)
                 .single();
 
-            const systemStock = dailyInfo?.latest_stock || baseInfo.base_stock || 0;
-            const systemBin = dailyInfo?.latest_bin || baseInfo.default_bin || 'NO BIN';
-
-            console.log('Part Found:', pn, 'BaseInfo:', baseInfo); // DEBUG LOG
+            const systemStock = dailyInfo?.latest_stock || baseInfo?.base_stock || 0;
+            const systemBin = dailyInfo?.latest_bin || baseInfo?.default_bin || 'NO BIN';
+            const description = baseInfo?.description || 'No Master Desc';
+            const category = baseInfo?.category || 'Unknown';
 
             setCurrentData({
                 id: null,
                 partNumber: pn,
                 scanCode: code,
-                description: baseInfo.description || '',
+                description: description,
                 binLocation: systemBin,
                 currentStock: systemStock,
-                averageCount: avgData?.average_count || 0, // NEW
+                averageCount: avgData?.average_count || 0,
                 phyQty: '',
                 difference: -systemStock,
                 remarkType: '',
                 remarkDetail: '',
+                nnCartonNo: '', // Reset NN Carton
                 damageQty: 0,
                 newBin: ''
             });
@@ -196,6 +198,7 @@ const Scanning = () => {
             if (phyQtyRef.current) setTimeout(() => phyQtyRef.current.focus(), 50);
 
         } catch (err) {
+            console.error(err);
             setStatus({ message: 'Error fetching data.', type: 'error' });
         }
     };
